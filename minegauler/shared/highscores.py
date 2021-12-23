@@ -38,7 +38,7 @@ from .utils import StructConstructorMixin
 
 logger = logging.getLogger(__name__)
 
-_REMOTE_POST_URL = "http://minegauler.lewisgaul.co.uk/api/v1/highscore"
+_REMOTE_POST_URL = "http://minegauler-test.lewisgaul.co.uk/api/v1/highscore"
 
 
 @attr.attrs(auto_attribs=True, frozen=True)
@@ -300,40 +300,40 @@ class LocalHighscoresDB(_SQLMixin, AbstractHighscoresDB):
 class RemoteHighscoresDB(_SQLMixin, AbstractHighscoresDB):
     """Remote highscores database."""
 
-    _USER = "admin"
-    _HOST = "minegauler-highscores.cb4tvkuqujyi.eu-west-2.rds.amazonaws.com"
-    _DB_NAME = "minegauler"
+    def __init__(
+        self,
+        path: pathlib.Path = pathlib.Path.home()
+        / ".local/var/lib/minegauler-highscores.db",
+    ):
+        self._path = path
+        if os.path.exists(path):
+            self._conn = sqlite3.connect(str(path))
+        else:
+            os.makedirs(path.parent, exist_ok=True)
+            self._conn = sqlite3.connect(str(path))
 
-    _cached_conn: Optional[mysql.connector.MySQLConnection] = None
-
-    def __init__(self):
-        """
-        :raise DBConnectionError:
-            If connecting to the DB fails for any reason.
-        """
-        cls = type(self)
-        if not cls._cached_conn:
-            logger.info("Initialising connection to remote highscores DB")
-            try:
-                cls._cached_conn = mysql.connector.connect(
-                    user=self._USER,
-                    password=self._PASSWORD,
-                    host=self._HOST,
-                    database=self._DB_NAME,
-                )
-            except mysql.connector.Error as e:
-                raise DBConnectionError(
-                    "Unable to connect to remote highscores database"
-                ) from e
-        self._conn = cls._cached_conn
+            self.execute(self._CREATE_TABLE_SQL)
+            self.execute("PRAGMA user_version = 0")
 
     @property
-    def conn(self) -> mysql.connector.MySQLConnection:
+    def conn(self) -> sqlite3.Connection:
         return self._conn
 
     @property
-    def _PASSWORD(self):
-        return os.environ.get("SQL_DB_PASSWORD")
+    def path(self) -> pathlib.Path:
+        return self._path
+
+    @staticmethod
+    def _highscore_row_factory(cursor: sqlite3.Cursor, row: Tuple) -> HighscoreStruct:
+        """Create a HighscoreStruct instance from a row in the highscores table."""
+        return HighscoreStruct(
+            **{col[0]: row[i] for i, col in enumerate(cursor.description)}
+        )
+
+    def get_db_version(self) -> int:
+        """Get the database version number."""
+        cursor = self.execute("PRAGMA user_version")
+        return self.extract_single_elem(cursor)
 
     def get_highscores(
         self,
@@ -346,35 +346,58 @@ class RemoteHighscoresDB(_SQLMixin, AbstractHighscoresDB):
         super().get_highscores(
             difficulty=difficulty, per_cell=per_cell, drag_select=drag_select, name=name
         )
+        self._conn.row_factory = self._highscore_row_factory
         cursor = self.execute(
             self._get_select_highscores_sql(
                 difficulty=difficulty,
                 per_cell=per_cell,
                 drag_select=drag_select,
                 name=name,
-            ),
-            dictionary=True,
+            )
         )
-        return [HighscoreStruct(**r) for r in cursor.fetchall()]
+        self._conn.row_factory = None
+        return cursor.fetchall()
 
     def count_highscores(self) -> int:
         """Count the number of rows in the highscores table."""
         super().count_highscores()
         return next(self.execute(self._get_highscores_count_sql()))[0]
 
+    def merge_highscores(self, path: PathLike) -> int:
+        """Merge in highscores from a given other SQLite DB."""
+        if pathlib.Path(path) == self._path:
+            raise ValueError("Cannot merge database into itself")
+
+        hs_table = self._TABLE_NAME
+        tmp_table = "mergedTable"
+        attach_db = "toMergeDB"
+
+        first_count = self.count_highscores()
+        self.execute(f"ATTACH DATABASE '{path!s}' AS {attach_db}")
+
+        self.execute(
+            f"CREATE TABLE IF NOT EXISTS {tmp_table} AS "
+            f"SELECT * FROM {hs_table} UNION SELECT * FROM {attach_db}.{hs_table}"
+        )
+        # TODO: This is not completely atomic, can we do better?
+        self.execute(f"DROP TABLE IF EXISTS {hs_table}")
+        self.execute(f"ALTER TABLE {tmp_table} RENAME TO {hs_table}")
+        self.execute(f"DETACH DATABASE {attach_db}")
+        self.conn.commit()
+        return self.count_highscores() - first_count
+
     def insert_highscore(self, highscore: HighscoreStruct) -> None:
         super().insert_highscore(highscore)
         self.execute(
-            self._get_insert_highscore_sql(), attr.astuple(highscore), commit=True
+            self._get_insert_highscore_sql(fmt="?"),
+            attr.astuple(highscore),
+            commit=True,
         )
 
     def execute(
         self, cmd: str, params: Tuple = (), *, commit=False, **cursor_args
-    ) -> mysql.connector.cursor.MySQLCursor:
-        try:
-            return super().execute(cmd, params, commit=commit, **cursor_args)
-        except mysql.connector.Error as e:
-            raise DBConnectionError("Error occurred trying to execute command") from e
+    ) -> sqlite3.Cursor:
+        return super().execute(cmd, params, commit=commit, **cursor_args)
 
 
 class HighscoresDatabases(enum.Enum):
