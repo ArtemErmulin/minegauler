@@ -26,8 +26,8 @@ from textwrap import dedent
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import attr
-import mysql.connector
-import mysql.connector.cursor
+# import mysql.connector
+# import mysql.connector.cursor
 import requests
 
 from .. import ROOT_DIR
