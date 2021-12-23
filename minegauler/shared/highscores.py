@@ -38,7 +38,7 @@ from .utils import StructConstructorMixin
 
 logger = logging.getLogger(__name__)
 
-_REMOTE_POST_URL = "http://minegauler-test.lewisgaul.co.uk/api/v1/highscore"
+_REMOTE_POST_URL = "http://minegauler.lewisgaul.co.uk/api/v1/highscore"
 
 
 @attr.attrs(auto_attribs=True, frozen=True)
@@ -302,8 +302,9 @@ class RemoteHighscoresDB(_SQLMixin, AbstractHighscoresDB):
 
     def __init__(
         self,
-        path: pathlib.Path = pathlib.Path.home()
-        / ".local/var/lib/minegauler-highscores.db",
+        path: pathlib.Path = pathlib.Path(
+            "/home/pi/.local/var/lib/minegauler-highscores.db"
+        ),
     ):
         self._path = path
         if os.path.exists(path):
